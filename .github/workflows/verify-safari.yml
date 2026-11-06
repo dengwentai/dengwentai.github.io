@@ -7,7 +7,7 @@ permissions:
   contents: read
 jobs:
   safari:
-    runs-on: macos-26
+    runs-on: macos-15
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
@@ -132,3 +132,5 @@ jobs:
           PY
     env:
       SAFARI_PLATFORM: ios
+      DEVELOPER_DIR: /Applications/Xcode_26.3.app/Contents/Developer
+
