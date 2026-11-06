@@ -1,4 +1,4 @@
-name: Verify native Safari
+name: Verify iPhone Safari
 on:
   push:
     branches:
@@ -11,7 +11,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
-      - name: Native Safari encrypted-content checks
+      - name: iPhone Safari encrypted-content checks
         run: |
           python3 - <<'PY'
           import base64, functools, gzip, http.server, json, os, pathlib, subprocess, threading, time, urllib.error, urllib.request
@@ -49,7 +49,17 @@ jobs:
           else: raise RuntimeError('SafariDriver did not start')
           session = None
           try:
-              result = call('POST','/session',{'capabilities':{'alwaysMatch':{'browserName':'safari'}}})
+              capabilities = {'browserName':'safari'}
+              if os.environ.get('SAFARI_PLATFORM') == 'ios':
+                  inventory=json.loads(subprocess.check_output(['xcrun','simctl','list','devices','available','--json']))['devices']
+                  candidates=[d for runtime, devices in sorted(inventory.items(), reverse=True) if 'iOS' in runtime for d in devices if d.get('isAvailable') and d['name'].startswith('iPhone')]
+                  assert candidates, 'No iPhone simulator runtime installed'
+                  phone=candidates[0]
+                  print('IPHONE_SIMULATOR',json.dumps(phone),flush=True)
+                  if phone['state'] != 'Booted': subprocess.run(['xcrun','simctl','boot',phone['udid']],check=True)
+                  subprocess.run(['xcrun','simctl','bootstatus',phone['udid'],'-b'],check=True,timeout=240)
+                  capabilities.update({'platformName':'iOS','safari:useSimulator':True,'safari:deviceUDID':phone['udid']})
+              result = call('POST','/session',{'capabilities':{'alwaysMatch':capabilities}})
               session = result['sessionId']
               prefix = '/session/'+session
               print('NATIVE_SAFARI_CAPABILITIES',json.dumps(result['capabilities']),flush=True)
@@ -84,6 +94,7 @@ jobs:
               navigate('/articles/unfinished-ideas/')
               assert js('return document.querySelector("h1").textContent') == 'The shape of an unfinished idea'
               assert js('return !!document.querySelector(".katex") && !!document.querySelector("pre")')
+              assert js('return document.documentElement.scrollWidth <= innerWidth')
               navigate('/p/'+'1'*32+'/')
               assert js('return document.querySelector("h1").textContent') == 'Protected writing'
               assert not js("return document.body.textContent.includes('PROTECTED_BODY_CANARY')")
@@ -119,3 +130,5 @@ jobs:
               driver_log.close()
 
           PY
+    env:
+      SAFARI_PLATFORM: ios
