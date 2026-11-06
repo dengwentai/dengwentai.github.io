@@ -1,0 +1,119 @@
+name: Verify native Safari
+on:
+  push:
+    branches:
+      - verify-safari
+permissions:
+  contents: read
+jobs:
+  safari:
+    runs-on: macos-26
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+      - name: Native Safari encrypted-content checks
+        run: |
+          python3 - <<'PY'
+          import base64, functools, gzip, http.server, json, os, pathlib, subprocess, threading, time, urllib.error, urllib.request
+
+          root = pathlib.Path(os.environ['RUNNER_TEMP']) / 'safari-fixture'
+          root.mkdir(exist_ok=True)
+          for item in json.loads(gzip.decompress(pathlib.Path('.github/fixtures/safari.json.gz').read_bytes())):
+              target = (root / item['name']).resolve()
+              assert target.is_relative_to(root.resolve())
+              target.parent.mkdir(parents=True, exist_ok=True)
+              target.write_bytes(base64.b64decode(item['bytes']))
+          class Handler(http.server.SimpleHTTPRequestHandler):
+              def log_message(self, *_args): pass
+          server = http.server.ThreadingHTTPServer(('127.0.0.1', 4322), functools.partial(Handler, directory=str(root)))
+          threading.Thread(target=server.serve_forever, daemon=True).start()
+          subprocess.run(['sudo', '/usr/bin/safaridriver', '--enable'], check=True)
+          driver_log = open(pathlib.Path(os.environ['RUNNER_TEMP']) / 'safaridriver.log', 'w')
+          driver = subprocess.Popen(['/usr/bin/safaridriver', '--port', '4444'], stdout=driver_log, stderr=subprocess.STDOUT)
+          def call(method, endpoint, data=None):
+              body = None if data is None else json.dumps(data).encode()
+              request = urllib.request.Request('http://127.0.0.1:4444'+endpoint, data=body, method=method, headers={'Content-Type':'application/json'})
+              try:
+                  with urllib.request.urlopen(request, timeout=60) as response:
+                      result = json.load(response)
+              except urllib.error.HTTPError as error:
+                  raise RuntimeError(error.read().decode()) from error
+              value = result.get('value')
+              if isinstance(value,dict) and value.get('error'):
+                  raise RuntimeError(value)
+              return value
+          for _ in range(40):
+              try:
+                  call('GET','/status');break
+              except (OSError,RuntimeError): time.sleep(0.5)
+          else: raise RuntimeError('SafariDriver did not start')
+          session = None
+          try:
+              result = call('POST','/session',{'capabilities':{'alwaysMatch':{'browserName':'safari'}}})
+              session = result['sessionId']
+              prefix = '/session/'+session
+              print('NATIVE_SAFARI_CAPABILITIES',json.dumps(result['capabilities']),flush=True)
+              def command(method, endpoint, data=None): return call(method,prefix+endpoint,data)
+              def js(script): return command('POST','/execute/sync',{'script':script,'args':[]})
+              def wait(script):
+                  for _ in range(100):
+                      if js(script): return
+                      time.sleep(0.1)
+                  raise AssertionError('Timed out: '+script)
+              def element(selector):
+                  return command('POST','/element',{'using':'css selector','value':selector})['element-6066-11e4-a52e-4f735466cecf']
+              def click(selector): command('POST','/element/'+element(selector)+'/click',{})
+              def fill(selector,text):
+                  e=element(selector)
+                  command('POST','/element/'+e+'/clear',{})
+                  command('POST','/element/'+e+'/value',{'text':text})
+              def navigate(path): command('POST','/url',{'url':'http://127.0.0.1:4322'+path})
+              def unlock():
+                  fill('#password','demo-Only-7nR3Q9zL2pX8wK4v')
+                  click('#unlock-form button')
+                  wait("return !document.querySelector('#protected-view').hidden")
+                  wait("return document.querySelector('#protected-view img').naturalWidth > 0")
+                  assert js("return document.querySelector('#protected-view h1').textContent") == 'PROTECTED_TITLE_CANARY'
+                  assert js("return !!document.querySelector('#protected-view .katex')")
+                  assert js("return document.querySelector('#protected-view pre').textContent.includes('visible only after unlock')")
+                  assert js("return document.querySelector('#password').value") == ''
+                  assert js('return localStorage.length+sessionStorage.length') == 0
+                  assert js("return performance.getEntriesByType('resource').every(e => new URL(e.name).origin === location.origin)")
+              navigate('/articles/unfinished-ideas/')
+              assert js('return document.querySelector("h1").textContent') == 'The shape of an unfinished idea'
+              assert js('return !!document.querySelector(".katex") && !!document.querySelector("pre")')
+              navigate('/p/'+'1'*32+'/')
+              assert js('return document.querySelector("h1").textContent') == 'Protected writing'
+              assert not js("return document.body.textContent.includes('PROTECTED_BODY_CANARY')")
+              fill('#password','incorrect-password')
+              click('#unlock-form button')
+              wait("return document.querySelector('#unlock-status').textContent.includes('Could not unlock')")
+              unlock()
+              click('#lock-button')
+              assert js("return document.querySelector('#protected-view').textContent") == ''
+              assert js('return localStorage.length+sessionStorage.length') == 0
+              unlock()
+              navigate('/about/')
+              command('POST','/back',{})
+              wait("return !!document.querySelector('#unlock-form') && !document.querySelector('#unlock-form').hidden")
+              assert js("return document.querySelector('#protected-view').textContent") == ''
+              # Tamper with the encrypted manifest on disk; Safari must not render it.
+              package=root/'p'/('1'*32)
+              envelope=json.loads((package/'envelope.json').read_text())
+              object_file=package/envelope['manifest']
+              changed=bytearray(object_file.read_bytes());changed[-1]^=1;object_file.write_bytes(changed)
+              command('POST','/refresh',{})
+              fill('#password','demo-Only-7nR3Q9zL2pX8wK4v')
+              click('#unlock-form button')
+              wait("return document.querySelector('#unlock-status').textContent.includes('Could not unlock')")
+              assert js("return document.querySelector('#protected-view').textContent") == ''
+              print('NATIVE_SAFARI_PASS: public math/code; wrong password; encrypted body/image/math/code; memory-only state; lock; back navigation; tampering',flush=True)
+          finally:
+              if session:
+                  try: call('DELETE','/session/'+session)
+                  except Exception: pass
+              driver.terminate()
+              server.shutdown()
+              driver_log.close()
+
+          PY
