@@ -75,6 +75,8 @@ jobs:
                   wait("return document.querySelector('#protected-view img').naturalWidth > 0")
                   assert js("return document.querySelector('#protected-view h1').textContent") == 'PROTECTED_TITLE_CANARY'
                   assert js("return !!document.querySelector('#protected-view .katex')")
+                  assert js("return !!document.querySelector('#protected-view .katex svg path').getAttribute('d')")
+                  assert js("return !!document.querySelector('#protected-view .katex svg line').getAttribute('stroke-width')")
                   assert js("return document.querySelector('#protected-view pre').textContent.includes('visible only after unlock')")
                   assert js("return document.querySelector('#password').value") == ''
                   assert js('return localStorage.length+sessionStorage.length') == 0
